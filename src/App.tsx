@@ -426,6 +426,22 @@ const SEED_COMMISSION_PLANS = () => [
   },
 ];
 
+/* ── company performance bonus ──────────────────────────────────────
+   A flat amount per eligible person when the company hits its monthly
+   goal. Tiers are editable, so a lower rung can be added later without
+   a code change.                                                      */
+
+const blankBonusTier = (pct = 100, amount = "") => ({
+  id: uid(), name: `${pct}% of goal`, pctOfGoal: pct, amountPerPerson: amount, enabled: true,
+});
+
+const defaultCompanyBonus = () => ({
+  enabled: true,
+  basis: "collected",        // collected | booked
+  tiers: [{ ...blankBonusTier(100, "150"), id: "cb-goal", name: "Goal met" }],
+  decisions: {},             // monthKey → "Approved" | "Paid"
+});
+
 /* ── leadership override plans ──────────────────────────────────── */
 
 const blankOverridePlan = (name = "New override plan") => ({
@@ -464,6 +480,7 @@ const defaultOps = () => ({
   commission: defaultCommission(),    // fallback for anyone with no plan assigned
   commissionPlans: SEED_COMMISSION_PLANS(),
   overridePlans: SEED_OVERRIDE_PLANS(),
+  companyBonus: defaultCompanyBonus(),
   bridge: defaultBridge(),
   sales: [],
   payouts: [],
@@ -1071,6 +1088,53 @@ function collectedInWindow(sales, window) {
   }, 0);
 }
 
+/* ═══════════════════════════════════════════ COMPANY PERFORMANCE BONUS ══
+
+   Everyone marked eligible earns the same flat amount when the company
+   reaches its monthly goal. Support staff can't sell, so tying them to a
+   percentage of revenue would give them no lever; a fixed amount on a
+   shared target does.
+   ═══════════════════════════════════════════════════════════════════ */
+
+function companyBonusStatus(data, monthKey) {
+  const cfg = { ...defaultCompanyBonus(), ...(data.ops?.companyBonus || {}) };
+  const window = monthKeyWindow(monthKey);
+  const roll = rollup(data, window);
+
+  const goal = n(goalPeriod(data, monthKey).company);
+  const actual = cfg.basis === "booked" ? roll.company.booked : roll.company.collected;
+  const pct = safePct(actual, goal);
+
+  const tiers = (cfg.tiers || [])
+    .filter((t) => t.enabled !== false)
+    .map((t) => ({ ...t, pct: n(t.pctOfGoal), amount: n(t.amountPerPerson) }))
+    .sort((a, b) => a.pct - b.pct);
+
+  let current = null;
+  tiers.forEach((t) => { if (pct !== null && pct >= t.pct) current = t; });
+  const next = tiers.find((t) => pct === null || pct < t.pct) || null;
+
+  const eligible = (data.people || []).filter(
+    (p) => p.active !== false && p.eligibility?.companyBonus);
+
+  const perPerson = cfg.enabled && current ? current.amount : 0;
+  const totalCost = perPerson * eligible.length;
+
+  const needed = next && goal > 0 ? Math.max(0, goal * (next.pct / 100) - actual) : 0;
+  const decision = cfg.decisions?.[monthKey] || "";
+
+  let status = "Not earned";
+  if (decision === "Paid") status = "Paid";
+  else if (decision === "Approved") status = "Approved";
+  else if (current) status = "Earned — pending approval";
+
+  return {
+    cfg, window, monthKey, goal, actual, pct, tiers,
+    current, next, needed, eligible, perPerson, totalCost, status, decision,
+    goalSet: goal > 0,
+  };
+}
+
 /* ══════════════════════════════════════════════════════ TEAM BONUS ══ */
 
 function bonusStatus(data, pool) {
@@ -1451,6 +1515,14 @@ function migrate(saved) {
     commission,
     commissionPlans: plans,
     overridePlans: overrides,
+    companyBonus: {
+      ...defaultCompanyBonus(),
+      ...(savedOps.companyBonus || {}),
+      tiers: Array.isArray(savedOps.companyBonus?.tiers) && savedOps.companyBonus.tiers.length
+        ? savedOps.companyBonus.tiers.map((t) => ({ ...blankBonusTier(), ...t }))
+        : defaultCompanyBonus().tiers,
+      decisions: savedOps.companyBonus?.decisions || {},
+    },
     bridge: { ...defaults.bridge, ...(savedOps.bridge || {}) },
     sales: (savedOps.sales || []).map((s) => ({
       ...blankSale(), ...s,
@@ -2795,6 +2867,116 @@ function MemberCommissionCard({ person, data, setData }) {
   );
 }
 
+function CompanyBonusPanel({ data, setData, today, goToSettings }) {
+  const [offset, setOffset] = useState(0);
+  const monthKey = useMemo(() => {
+    const d = new Date(today.getFullYear(), today.getMonth() - offset, 1);
+    return isoD(d).slice(0, 7);
+  }, [today, offset]);
+
+  const s = useMemo(() => companyBonusStatus(data, monthKey), [data, monthKey]);
+
+  const decide = (value) =>
+    setData((d) => ({
+      ...d,
+      ops: {
+        ...d.ops,
+        companyBonus: {
+          ...d.ops.companyBonus,
+          decisions: { ...(d.ops.companyBonus.decisions || {}), [monthKey]: value },
+        },
+      },
+    }));
+
+  return (
+    <div className="panel">
+      <div className="row-between">
+        <div className="panel-hd">Company Performance Bonus</div>
+        <span className={"chip " + (s.status === "Paid" ? "chip-ink" : s.current ? "chip-gold" : "")}>
+          {s.status}
+        </span>
+      </div>
+
+      <div className="ops-monthnav">
+        <button className="navbtn" onClick={() => setOffset(offset + 1)}>‹</button>
+        <span className="navlabel">{s.window.label}</span>
+        <button className="navbtn" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 1))}>›</button>
+      </div>
+
+      {!s.goalSet ? (
+        <>
+          <div className="ops-warn">
+            No company goal set for {s.window.label}, so the bonus has nothing to measure against.
+          </div>
+          <button className="btn-sm-dark" onClick={goToSettings}>Set it on the Org tab</button>
+        </>
+      ) : (
+        <>
+          <div className="cg">
+            <div className="ci ci-hero">
+              <div className="ci-lbl">{s.cfg.basis === "booked" ? "Revenue booked" : "Revenue collected"}</div>
+              <div className="ci-val">{$$(s.actual)}</div>
+            </div>
+            <div className="ci">
+              <div className="ci-lbl">Company goal</div>
+              <div className="ci-val">{$$(s.goal)}</div>
+            </div>
+            <div className="ci">
+              <div className="ci-lbl">% achieved</div>
+              <div className="ci-val">{pctText(s.pct)}</div>
+            </div>
+            <div className="ci">
+              <div className="ci-lbl">Per person</div>
+              <div className="ci-val">{$$c(s.perPerson)}</div>
+            </div>
+          </div>
+
+          <div className="progbar"><div className="progbar-fill" style={{ width: barWidth(s.pct) + "%" }} /></div>
+
+          {s.current ? (
+            <div className="next-callout">
+              Goal met. <b>{$$c(s.perPerson)}</b> each for {s.eligible.length}{" "}
+              {s.eligible.length === 1 ? "person" : "people"} — <b>{$$(s.totalCost)}</b> total,
+              pending your approval.
+            </div>
+          ) : (
+            <div className="next-callout">
+              <b>{$$(s.needed)}</b> more to unlock {$$c(n(s.next?.amountPerPerson))} each
+              {s.eligible.length > 0 && <> — {$$(n(s.next?.amountPerPerson) * s.eligible.length)} total</>}.
+              {s.pct !== null && <> Currently at {pctText(s.pct)}.</>}
+            </div>
+          )}
+
+          <div className="sect-lbl">Eligible</div>
+          {s.eligible.length === 0 ? (
+            <p className="hint-sm">
+              Nobody is marked eligible. Turn on “Company bonus” per person in Settings → Who Is On What.
+            </p>
+          ) : (
+            <div className="checks">
+              {s.eligible.map((p) => (
+                <span key={p.id} className="chip">{p.name || "Unnamed"} · {p.department}</span>
+              ))}
+            </div>
+          )}
+
+          <div className="btn-row">
+            {s.current && !s.decision && (
+              <button className="btn-primary" onClick={() => decide("Approved")}>
+                Approve {$$(s.totalCost)}
+              </button>
+            )}
+            {s.decision === "Approved" && (
+              <button className="btn-primary" onClick={() => decide("Paid")}>Mark as paid</button>
+            )}
+            {s.decision && <button className="btn-secondary" onClick={() => decide("")}>Undo decision</button>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function BonusPoolCard({ pool, data, setData }) {
   const s = bonusStatus(data, pool);
   const set = (patch) =>
@@ -2894,6 +3076,8 @@ function CommissionsTab({ data, setData, today, goToSettings }) {
     },
     { base: 0, commission: 0, override: 0, owed: 0 });
 
+  const bonusNow = useMemo(() => companyBonusStatus(data, isoD(today).slice(0, 7)), [data, today]);
+
   const unsetTiers = (data.ops.commissionPlans || []).flatMap((pl) =>
     (pl.tiers || []).filter((t, i) => i > 0 && t.enabled !== false && String(t.minCollected).trim() === "")
       .map((t) => ({ ...t, name: `${pl.name} · ${t.name}` })));
@@ -2913,7 +3097,8 @@ function CommissionsTab({ data, setData, today, goToSettings }) {
         <div className="ops-kpis">
           <div className="ops-kpi"><div className="eg-v">{$$(totals.base)}</div><div className="eg-l">Commissionable collected</div></div>
           <div className="ops-kpi"><div className="eg-v">{$$c(totals.override)}</div><div className="eg-l">Leadership overrides</div></div>
-          <div className="ops-kpi"><div className="eg-v">{$$c(totals.commission + totals.override)}</div><div className="eg-l">Total incentive expense</div></div>
+          <div className="ops-kpi"><div className="eg-v">{$$c(bonusNow.totalCost)}</div><div className="eg-l">Company bonus</div></div>
+          <div className="ops-kpi"><div className="eg-v">{$$c(totals.commission + totals.override + bonusNow.totalCost)}</div><div className="eg-l">Total incentive expense</div></div>
           <div className="ops-kpi"><div className="eg-v">{eligible.length}</div><div className="eg-l">Commission eligible</div></div>
         </div>
       </div>
@@ -2936,6 +3121,9 @@ function CommissionsTab({ data, setData, today, goToSettings }) {
       ) : (
         eligible.map((p) => <MemberCommissionCard key={p.id} person={p} data={data} setData={setData} />)
       )}
+
+      <div className="row-between"><h2>Company Bonus</h2></div>
+      <CompanyBonusPanel data={data} setData={setData} today={today} goToSettings={goToSettings} />
 
       <div className="row-between">
         <h2>Team Bonus</h2>
@@ -3754,6 +3942,89 @@ function OverridePlanCard({ plan, data, setData }) {
   );
 }
 
+function CompanyBonusSettings({ data, setData }) {
+  const cfg = { ...defaultCompanyBonus(), ...(data.ops.companyBonus || {}) };
+  const set = (patch) =>
+    setData((d) => ({ ...d, ops: { ...d.ops, companyBonus: { ...d.ops.companyBonus, ...patch } } }));
+  const setTier = (idx, patch) =>
+    set({ tiers: cfg.tiers.map((t, i) => (i === idx ? { ...t, ...patch } : t)) });
+
+  const eligibleCount = data.people.filter((p) => p.active !== false && p.eligibility?.companyBonus).length;
+  const topAmount = Math.max(0, ...cfg.tiers.filter((t) => t.enabled !== false).map((t) => n(t.amountPerPerson)));
+
+  return (
+    <>
+      <div className="sect-lbl">Company Performance Bonus</div>
+      <p className="hint-sm">
+        A flat amount for each eligible person when the company reaches its monthly goal.
+      </p>
+
+      <div className="settings-row">
+        <span>Bonus active</span>
+        <YesNo value={cfg.enabled} onChange={(v) => set({ enabled: v })} />
+      </div>
+
+      <label className="field">
+        <span className="field-lbl">Measure the goal against</span>
+        <select className="input" value={cfg.basis} onChange={(e) => set({ basis: e.target.value })}>
+          <option value="collected">Revenue collected (cash in the bank)</option>
+          <option value="booked">Revenue booked (sold, paid or not)</option>
+        </select>
+      </label>
+      <p className="hint-xs">
+        Collected is the safer basis — you only owe the bonus out of money you actually have.
+      </p>
+
+      <div className="setlist">
+        {cfg.tiers.map((t, i) => (
+          <div className="setrow" key={t.id}>
+            <div className="setname">
+              {t.name}
+              {t.enabled === false && <span className="chip"> Disabled</span>}
+            </div>
+            <div className="setgrid">
+              <label className="field">
+                <span className="field-lbl">% of goal reached</span>
+                <input className="input" type="number" inputMode="decimal" value={t.pctOfGoal}
+                  onChange={(e) => setTier(i, { pctOfGoal: e.target.value })} />
+              </label>
+              <label className="field">
+                <span className="field-lbl">Amount per person ($)</span>
+                <input className="input" type="number" inputMode="decimal" placeholder="0"
+                  value={t.amountPerPerson} onChange={(e) => setTier(i, { amountPerPerson: e.target.value })} />
+              </label>
+            </div>
+            <div className="btn-row">
+              <button className="btn-sm" onClick={() => setTier(i, { enabled: t.enabled === false })}>
+                {t.enabled === false ? "Enable" : "Disable"}
+              </button>
+              {cfg.tiers.length > 1 && (
+                <button className="btn-sm" onClick={() => set({ tiers: cfg.tiers.filter((_, k) => k !== i) })}>
+                  Delete
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+      <button className="btn-sm" onClick={() => set({ tiers: [...cfg.tiers, blankBonusTier(90, "")] })}>
+        + Add a lower rung
+      </button>
+
+      <div className="example">
+        <div className="example-grid">
+          <div><span className="pl-l">Eligible people</span><span className="pl-v">{eligibleCount}</span></div>
+          <div><span className="pl-l">Cost at top rung</span><span className="pl-v">{$$(topAmount * eligibleCount)}</span></div>
+          <div><span className="pl-l">Per year if hit every month</span><span className="pl-v">{$$(topAmount * eligibleCount * 12)}</span></div>
+        </div>
+      </div>
+      <p className="hint-xs">
+        Eligibility is per person, under “Who Is On What” below.
+      </p>
+    </>
+  );
+}
+
 function CompensationSettings({ data, setData }) {
   const setPerson = (id, patch) =>
     setData((d) => ({ ...d, people: d.people.map((x) => (x.id === id ? { ...x, ...patch } : x)) }));
@@ -4153,6 +4424,7 @@ function SettingsTab({ data, setData, onReset, today }) {
       <MemberOrgSettings data={data} setData={setData} />
       <BridgeSettings data={data} setData={setData} />
       <CompensationSettings data={data} setData={setData} />
+      <CompanyBonusSettings data={data} setData={setData} />
 
       <div className="sect-lbl">Team Members · Divisions & Eligibility</div>
       {data.people.length === 0 ? (
@@ -4294,7 +4566,7 @@ export default function App() {
       </header>
 
       <nav className="nav">
-        {[["rev","Revenue"],["team","Team"],["sales","Sales"],["org","Org"],["comm","Commissions"],["charts","Charts"],["settings","Settings"]]
+        {[["rev","Revenue"],["team","Team"],["sales","Sales"],["org","Org"],["comm","Comp & Bonuses"],["charts","Charts"],["settings","Settings"]]
           .map(([id, label]) => (
             <button key={id} className={"nav-btn" + (tab === id ? " nav-active" : "")}
               onClick={() => setTab(id)}>{label}</button>
