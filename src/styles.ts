@@ -1,17 +1,27 @@
 export const APP_CSS = String.raw`
       *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
 
-      .root {
+      /* Tokens live on :root, not .root — the sign-in and invite screens
+         render outside the dashboard shell and still need them. */
+      :root {
         --ink:#1C1712; --soft:#5b5348; --paper:#FAF7F1; --card:#FFF;
         --line:#E5DAC8; --gold:#B8860B; --gold-lt:#EFE0B0; --gold-pale:#FAF3DE;
         --burg:#8A2E2E; --grn:#2F6B4F;
-        font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;
+        --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;
+        --serif:Georgia,"Times New Roman",serif;
+      }
+
+      body { font-family:var(--sans); background:var(--paper); color:var(--ink); }
+
+      .root {
+        font-family:var(--sans);
         background:var(--paper); color:var(--ink);
         min-height:100%; max-width:760px; margin:0 auto; padding-bottom:60px;
       }
 
       .loading { display:flex; flex-direction:column; align-items:center; justify-content:center;
-                 height:300px; gap:12px; color:var(--soft); }
+                 min-height:60vh; gap:12px; color:var(--soft); font-family:var(--sans);
+                 text-align:center; padding:24px 16px; }
       .spinner { width:24px; height:24px; border-radius:50%; border:3px solid var(--line);
                  border-top-color:var(--gold); animation:spin .8s linear infinite; }
       @keyframes spin { to { transform:rotate(360deg); } }
@@ -442,4 +452,63 @@ export const APP_CSS = String.raw`
       .neg { color:var(--burg); }
       .pos { color:var(--grn); }
       @media (max-width:420px) { .g2, .inline-form { grid-template-columns:1fr; } .example b { font-size:15px; } }
+
+      /* ── sign in / invite redemption ── */
+      .auth-wrap  { min-height:100vh; display:flex; align-items:center; justify-content:center;
+                    padding:24px 16px; background:var(--paper); font-family:var(--sans); }
+      .auth-card  { width:100%; max-width:380px; background:var(--card); border:1px solid var(--line);
+                    border-radius:14px; padding:26px 22px; display:flex; flex-direction:column; }
+      .auth-title { font-family:var(--serif); font-size:22px; font-weight:600;
+                    margin-top:2px; }
+      .auth-sub   { font-size:13px; color:var(--soft); margin:6px 0 18px; line-height:1.5; }
+      .auth-label { font-size:11px; font-weight:700; letter-spacing:.04em; color:var(--soft);
+                    text-transform:uppercase; margin-bottom:5px; }
+      .auth-input { padding:10px 12px; border:1px solid var(--line); border-radius:8px;
+                    font-size:15px; background:var(--paper); color:var(--ink); margin-bottom:14px; }
+      .auth-input:focus { outline:2px solid var(--gold); outline-offset:1px;
+                          border-color:var(--gold); background:var(--card); }
+      .auth-code  { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.12em;
+                    text-align:center; font-size:17px; }
+      .auth-btn   { padding:11px; border:none; border-radius:999px; background:var(--ink);
+                    color:var(--gold-lt); font-size:14px; font-weight:600; cursor:pointer; }
+      .auth-btn:disabled { opacity:.55; cursor:default; }
+      .auth-link  { background:none; border:none; color:var(--soft); font-size:12.5px;
+                    cursor:pointer; margin-top:14px; text-decoration:underline; }
+      .auth-error { color:var(--burg); font-size:12.5px; margin:0 0 12px; line-height:1.45; }
+
+      /* ── password strength ── */
+      .pw-meter { display:flex; align-items:center; gap:8px; margin:-6px 0 6px; }
+      .pw-track { flex:1; height:4px; border-radius:999px; background:var(--line); overflow:hidden; }
+      .pw-fill  { height:100%; border-radius:999px; transition:width .18s ease, background .18s ease; }
+      .pw-word  { font-size:10.5px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; }
+      .pw-hint  { font-size:11.5px; color:var(--soft); margin:0 0 12px; line-height:1.45; }
+
+      .pw-fill.pw-weak   { background:var(--burg); }
+      .pw-fill.pw-ok     { background:var(--gold); }
+      .pw-fill.pw-good   { background:var(--gold); }
+      .pw-fill.pw-strong { background:var(--grn); }
+      .pw-word.pw-weak   { color:var(--burg); }
+      .pw-word.pw-ok,
+      .pw-word.pw-good   { color:var(--gold); }
+      .pw-word.pw-strong { color:var(--grn); }
+      .pw-hint.pw-weak   { color:var(--burg); }
+
+      /* ── read-only lock ──
+         Cosmetic only. A member without edit permission is refused by
+         row level security regardless of what the browser allows. */
+      .ro-body input, .ro-body select, .ro-body textarea,
+      .ro-body button:not(.nav-btn):not(.chart-toggle) {
+        pointer-events:none; opacity:.72;
+      }
+      .ro-banner { display:flex; align-items:center; gap:8px; padding:8px 12px; margin-bottom:10px;
+                   border:1px solid var(--gold-lt); background:var(--gold-pale);
+                   border-radius:8px; font-size:12.5px; color:var(--soft); }
+
+      /* ── account strip ── */
+      .who      { display:flex; align-items:center; gap:8px; font-size:11px; color:var(--soft); }
+      .who-mail { max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .who-out  { background:none; border:none; color:var(--gold); font-size:11px;
+                  cursor:pointer; text-decoration:underline; padding:0; }
+      .who-role { font-size:10px; font-weight:700; letter-spacing:.04em; text-transform:uppercase;
+                  color:var(--gold); }
     `;

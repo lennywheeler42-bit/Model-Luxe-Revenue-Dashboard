@@ -1,0 +1,7 @@
+project_id = "khhdavquqtqsaghyjccw"
+
+[functions.redeem-invite]
+verify_jwt = false
+
+[functions.reset-password]
+verify_jwt = false

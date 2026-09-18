@@ -1,0 +1,21 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+.vercel/
+
+# env / secrets — never commit
+.env
+.env.*
+!.env.example
+
+# supabase local
+.supabase/
+supabase/.temp/
+
+# editor / os
+.DS_Store
+*.log
+.idea/
+.vscode/

@@ -10,6 +10,12 @@
 
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { APP_CSS } from "./styles";
+import { useAuth, AuthScreen, ChangePassword } from "./auth";
+import { loadDashboard, saveDashboard } from "./storage";
+import { visibleTabs, canEditTab, hasCapability, TABS, CAPABILITIES,
+         LEVEL_LABELS, PRESETS, defaultPermissions } from "./permissions";
+import { supabase } from "./supabase";
+import { emailProblem } from "./validation";
 
 /* ═══════════════════════════════════════════════ DIVISIONS & CATALOG ══ */
 
@@ -67,7 +73,6 @@ const divisionById  = (data, id) => (data?.org?.divisions || []).find((d) => d.i
 const teamById      = (data, id) => (data?.org?.teams || []).find((t) => t.id === id);
 const divisionName  = (data, id) => divisionById(data, id)?.name || "Unassigned";
 const divisionColor = (data, id) => divisionById(data, id)?.color || "#6b6257";
-const teamName      = (data, id) => teamById(data, id)?.name || "Unassigned";
 const teamsInDivision = (data, divisionId, includeArchived = false) =>
   teamList(data, includeArchived).filter((t) => t.divisionId === divisionId);
 const membersInTeam = (data, teamId) => (data?.people || []).filter((p) => p.teamId === teamId);
@@ -169,7 +174,6 @@ const STARTER: any[] = [
 
 /* ═══════════════════════════════════════════════════════════ HELPERS ══ */
 
-const KEY = "mlm-calc-v7";
 const uid = () => Math.random().toString(36).slice(2, 10);
 const n   = (v) => (v === "" || v == null || isNaN(+v) ? 0 : +v);
 const $$  = (v) => "$" + n(v).toLocaleString("en-US", { maximumFractionDigits: 0 });
@@ -1342,18 +1346,6 @@ function attentionItems(data, rep, type) {
 }
 
 /* ═════════════════════════════════════════════════════════ STORAGE ══ */
-
-function loadSaved() {
-  try {
-    const raw = window.localStorage.getItem(KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch { return null; }
-}
-
-function persist(data) {
-  try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch {}
-  return Promise.resolve();
-}
 
 function catalogLookup(name) {
   for (const group of CATALOG) {
@@ -2726,7 +2718,9 @@ function MemberCommissionCard({ person, data, setData }) {
             <span className={"sl" + (summary.owed < 0 ? " neg" : "")}>Owed <b>{$$c(summary.owed)}</b></span>
           </div>
           <div className="card-meta">
-            <span className="chip">{commission.name || "Default rates"}</span>
+            {commission.id
+              ? <span className="chip">{commission.name}</span>
+              : <span className="chip chip-red">No plan assigned</span>}
             {override && <span className="chip chip-gold">Override {override.rate}%</span>}
             {!summary.eligible && <span className="chip">Commission off</span>}
           </div>
@@ -2736,6 +2730,12 @@ function MemberCommissionCard({ person, data, setData }) {
 
       {open && (
         <div className="card-body">
+          {!commission.id && summary.eligible && (
+            <p className="ops-warn">
+              No commission plan is assigned, so this person is being paid the
+              fallback rates. Pick a plan below so their earnings are deliberate.
+            </p>
+          )}
           {!summary.eligible && (
             <div className="ops-warn">
               Personal commission is switched off for {person.name || "this person"} in
@@ -3625,92 +3625,6 @@ function ChartsTab({ data, type, offset, setType, setOffset, today }) {
 
 /* ══════════════════════════════════════════════════════ SETTINGS TAB ══ */
 
-function TierSettings({ data, setData }) {
-  const commission = data.ops.commission;
-  const setCommission = (patch) =>
-    setData((d) => ({ ...d, ops: { ...d.ops, commission: { ...d.ops.commission, ...patch } } }));
-
-  const setTier = (idx, patch) =>
-    setCommission({ tiers: commission.tiers.map((t, i) => (i === idx ? { ...t, ...patch } : t)) });
-
-  const tiers = usableTiers(commission);
-  const example = tiers[2]?.min ?? tiers[1]?.min ?? 5000;
-  const flatExample = commissionOn(example * 1.2, { ...commission, mode: "flat" }).commission;
-  const margExample = commissionOn(example * 1.2, { ...commission, mode: "marginal" }).commission;
-
-  /* thresholds must climb */
-  const outOfOrder = commission.tiers.some((t, i) => {
-    if (i === 0) return false;
-    const prev = commission.tiers[i - 1];
-    if (String(t.minCollected).trim() === "" || String(prev.minCollected).trim() === "") return false;
-    return n(t.minCollected) <= n(prev.minCollected);
-  });
-
-  return (
-    <>
-      <div className="sect-lbl">Commission Tiers</div>
-      <div className="setlist">
-        {commission.tiers.map((t, i) => (
-          <div className="setrow" key={t.id}>
-            <div className="setname">{t.name}</div>
-            <div className="setgrid">
-              <label className="field">
-                <span className="field-lbl">Rate %</span>
-                <input className="input" type="number" inputMode="decimal" value={t.rate}
-                  onChange={(e) => setTier(i, { rate: e.target.value })} />
-              </label>
-              <label className="field">
-                <span className="field-lbl">Commissionable sales collected ($)</span>
-                <input className="input" type="number" inputMode="decimal"
-                  placeholder={i === 0 ? "0" : "Set a threshold"}
-                  value={t.minCollected} disabled={i === 0}
-                  onChange={(e) => setTier(i, { minCollected: e.target.value })} />
-              </label>
-            </div>
-          </div>
-        ))}
-      </div>
-      {outOfOrder && <div className="ops-warn">Each tier's threshold must be higher than the one before it.</div>}
-
-      <div className="sect-lbl">How higher tiers pay</div>
-      <div className="setlist">
-        <div className="setrow">
-          <button className={"chip chip-btn" + (commission.mode === "marginal" ? " chip-gold" : "")}
-            onClick={() => setCommission({ mode: "marginal" })}>
-            Only on dollars above each threshold
-          </button>
-          <button className={"chip chip-btn" + (commission.mode === "flat" ? " chip-gold" : "")}
-            onClick={() => setCommission({ mode: "flat" })}>
-            On all dollars once the tier is reached
-          </button>
-        </div>
-      </div>
-      <div className="example">
-        <div className="example-grid">
-          <div><span className="pl-l">Also works for</span><span className="pl-v">{$$(example * 1.2)} collected</span></div>
-          <div><span className="pl-l">Marginal</span><span className="pl-v">{$$c(margExample)}</span></div>
-          <div><span className="pl-l">Flat</span><span className="pl-v">{$$c(flatExample)}</span></div>
-        </div>
-      </div>
-
-      <div className="g2">
-        <label className="field">
-          <span className="field-lbl">Tiers reset every</span>
-          <select className="input" value={commission.resetPeriod}
-            onChange={(e) => setCommission({ resetPeriod: e.target.value })}>
-            <option value="month">Month</option>
-            <option value="quarter">Quarter</option>
-          </select>
-        </label>
-        <div className="field">
-          <span className="field-lbl">Refunds reduce commission</span>
-          <YesNo value={commission.clawbackRefunds} onChange={(v) => setCommission({ clawbackRefunds: v })} />
-        </div>
-      </div>
-    </>
-  );
-}
-
 function CommissionPlanCard({ plan, data, setData }) {
   const [open, setOpen] = useState(false);
   const assigned = data.people.filter((p) => p.commissionPlanId === plan.id);
@@ -4495,26 +4409,425 @@ function AppStyles() {
   return <style dangerouslySetInnerHTML={{ __html: APP_CSS }} />;
 }
 
+/* ════════════════════════════════════════════════════════ MEMBERS ══
+   Invite people and decide what each of them can reach.
+
+   Every write here goes through a database function that re-checks the
+   caller. Nothing on this screen is trusted: the same calls made by
+   hand, without this UI, are refused the same way.
+   ══════════════════════════════════════════════════════════════════ */
+
+function PermissionEditor({ permissions, onChange, disabled = false }) {
+  const setTab = (tabId, level) =>
+    onChange({ ...permissions, tabs: { ...permissions.tabs, [tabId]: level } });
+
+  return (
+    <div className="setlist">
+      {TABS.map((tab) => (
+        <div className="setrow" key={tab.id}>
+          <span className="setname">{tab.label}</span>
+          <select className="input" disabled={disabled}
+            value={permissions.tabs?.[tab.id] || "none"}
+            onChange={(e) => setTab(tab.id, e.target.value)}>
+            {tab.levels.map((level) => (
+              <option key={level} value={level}>{LEVEL_LABELS[level]}</option>
+            ))}
+          </select>
+        </div>
+      ))}
+
+      {CAPABILITIES.map((capability) => (
+        <label className="setrow" key={capability.id}>
+          <span className="setname">{capability.label}</span>
+          <input type="checkbox" disabled={disabled}
+            checked={Boolean(permissions[capability.id])}
+            onChange={(e) => onChange({ ...permissions, [capability.id]: e.target.checked })} />
+        </label>
+      ))}
+    </div>
+  );
+}
+
+function InviteForm({ people, onIssued }) {
+  const [email, setEmail]             = useState("");
+  const [memberId, setMemberId]       = useState("");
+  const [permissions, setPermissions] = useState(defaultPermissions());
+  const [error, setError]             = useState("");
+  const [busy, setBusy]               = useState(false);
+
+  const applyPreset = (key) => {
+    if (!key) return;
+    setPermissions(JSON.parse(JSON.stringify(PRESETS[key].permissions)));
+  };
+
+  const issue = async () => {
+    const problem = emailProblem(email);
+    if (problem) { setError(problem); return; }
+
+    setError(""); setBusy(true);
+    const { data, error: rpcError } = await supabase.rpc("create_invite", {
+      p_email: email.trim(),
+      p_role: "member",
+      p_permissions: permissions,
+      p_member_id: memberId || null,
+    });
+    setBusy(false);
+
+    if (rpcError) { setError(rpcError.message); return; }
+    onIssued({ email: email.trim(), code: data });
+    setEmail(""); setMemberId(""); setPermissions(defaultPermissions());
+  };
+
+  return (
+    <div className="card">
+      <div className="card-head"><span className="card-name">Invite someone</span></div>
+      <div className="card-body">
+        <div className="g2">
+          <div className="field">
+            <label className="field-lbl">Email</label>
+            <input className="input" type="email" value={email}
+              placeholder="name@company.com"
+              onChange={(e) => { setEmail(e.target.value); setError(""); }} />
+          </div>
+          <div className="field">
+            <label className="field-lbl">Link to team member</label>
+            <select className="input" value={memberId}
+              onChange={(e) => setMemberId(e.target.value)}>
+              <option value="">Not linked</option>
+              {people.map((person) => (
+                <option key={person.id} value={person.id}>{person.name || "Unnamed"}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <p className="hint-sm">
+          Linking lets them see their own commission without seeing anyone else's.
+        </p>
+
+        <div className="field">
+          <label className="field-lbl">Start from a preset</label>
+          <select className="input" defaultValue=""
+            onChange={(e) => applyPreset(e.target.value)}>
+            <option value="">Choose a preset…</option>
+            {Object.entries(PRESETS).map(([key, preset]) => (
+              <option key={key} value={key}>{preset.label}</option>
+            ))}
+          </select>
+        </div>
+
+        <PermissionEditor permissions={permissions} onChange={setPermissions} />
+
+        {error && <p className="auth-error">{error}</p>}
+
+        <div className="btn-row">
+          <button className="btn-primary" disabled={busy || !email.trim()} onClick={issue}>
+            {busy ? "Creating…" : "Create invite code"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function IssuedCode({ issued, onDone }) {
+  const isReset = issued.kind === "reset";
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(issued.code);
+      setCopied(true);
+    } catch { setCopied(false); }
+  };
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <span className="card-name">
+          {isReset ? "Reset code" : "Invite code"} for {issued.email}
+        </span>
+      </div>
+      <div className="card-body center">
+        <div className="auth-code ops-big">{issued.code}</div>
+        <p className="hint-sm">
+          Shown once and never stored, so copy it now. It only works with{" "}
+          <b>{issued.email}</b> and expires in {isReset ? "24 hours" : "7 days"}.
+        </p>
+        <div className="btn-row">
+          <button className="btn-secondary" onClick={copy}>
+            {copied ? "Copied ✓" : "Copy code"}
+          </button>
+          <button className="btn-sm" onClick={onDone}>Done</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MemberRow({ member, people, currentUserId, onChanged, onResetIssued }) {
+  const [open, setOpen] = useState(false);
+  const [permissions, setPermissions] = useState(member.permissions || defaultPermissions());
+  const [memberId, setMemberId] = useState(member.member_id || "");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const isSelf = member.id === currentUserId;
+
+  const save = async () => {
+    setError(""); setBusy(true);
+    const { error: rpcError } = await supabase.rpc("set_member_access", {
+      p_user_id: member.id,
+      p_permissions: permissions,
+      p_member_id: memberId || null,
+    });
+    setBusy(false);
+    if (rpcError) { setError(rpcError.message); return; }
+    setOpen(false);
+    onChanged();
+  };
+
+  const issueReset = async () => {
+    setError(""); setBusy(true);
+    const { data, error: rpcError } = await supabase.rpc("create_password_reset", {
+      p_user_id: member.id,
+    });
+    setBusy(false);
+    if (rpcError) { setError(rpcError.message); return; }
+    onResetIssued({ email: member.email, code: data });
+  };
+
+  const setStatus = async (status) => {
+    setError(""); setBusy(true);
+    const { error: rpcError } = await supabase.rpc("set_member_access", {
+      p_user_id: member.id, p_status: status,
+    });
+    setBusy(false);
+    if (rpcError) { setError(rpcError.message); return; }
+    onChanged();
+  };
+
+  const linkedPerson = people.find((person) => person.id === member.member_id);
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <div className="card-head-left">
+          <span className="card-name">{member.full_name || member.email}</span>
+          <span className="card-meta">
+            {member.role === "admin" && <span className="role-tag">Admin</span>}
+            {member.status !== "active" && <span className="chip chip-red">{member.status}</span>}
+            {linkedPerson && <span className="chip">{linkedPerson.name}</span>}
+          </span>
+        </div>
+        {!isSelf && (
+          <button className="btn-sm" onClick={() => setOpen(!open)}>
+            {open ? "Close" : "Access"}
+          </button>
+        )}
+      </div>
+
+      {isSelf && <div className="card-body"><p className="hint-sm">
+        This is you. Nobody can change their own access — ask another admin.
+      </p></div>}
+
+      {open && !isSelf && (
+        <div className="card-body">
+          <div className="field">
+            <label className="field-lbl">Link to team member</label>
+            <select className="input" value={memberId}
+              onChange={(e) => setMemberId(e.target.value)}>
+              <option value="">Not linked</option>
+              {people.map((person) => (
+                <option key={person.id} value={person.id}>{person.name || "Unnamed"}</option>
+              ))}
+            </select>
+          </div>
+
+          <PermissionEditor permissions={permissions} onChange={setPermissions}
+            disabled={member.role === "admin"} />
+
+          {member.role === "admin" && (
+            <p className="hint-sm">Admins always have full access. Permissions do not apply.</p>
+          )}
+
+          {error && <p className="auth-error">{error}</p>}
+
+          <div className="btn-row">
+            <button className="btn-primary" disabled={busy} onClick={save}>
+              {busy ? "Saving…" : "Save access"}
+            </button>
+            <button className="btn-secondary" disabled={busy} onClick={issueReset}>
+              Reset password
+            </button>
+            {member.status === "active"
+              ? <button className="btn-danger" disabled={busy}
+                  onClick={() => setStatus("disabled")}>Disable</button>
+              : <button className="btn-secondary" disabled={busy}
+                  onClick={() => setStatus("active")}>Re-enable</button>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MembersTab({ data, currentUserId }) {
+  const [members, setMembers] = useState<any[]>([]);
+  const [invites, setInvites] = useState<any[]>([]);
+  const [issued, setIssued]   = useState<any>(null);
+  const [error, setError]     = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const people = data.people || [];
+
+  const refresh = async () => {
+    setError("");
+    const [profileRows, inviteRows] = await Promise.all([
+      supabase.from("profiles").select("*").order("created_at"),
+      supabase.from("invites").select("*")
+        .is("claimed_at", null).is("revoked_at", null).order("created_at"),
+    ]);
+    if (profileRows.error) setError(profileRows.error.message);
+    setMembers(profileRows.data || []);
+    setInvites(inviteRows.data || []);
+    setLoading(false);
+  };
+
+  useEffect(() => { refresh(); }, []);
+
+  const revoke = async (inviteId) => {
+    const { error: rpcError } = await supabase.rpc("revoke_invite", { p_id: inviteId });
+    if (rpcError) { setError(rpcError.message); return; }
+    refresh();
+  };
+
+  if (loading) return <div className="tab-body"><p className="hint-sm">Loading members…</p></div>;
+
+  return (
+    <div className="tab-body">
+      <h2>Members</h2>
+      {error && <p className="auth-error">{error}</p>}
+
+      {issued
+        ? <IssuedCode issued={issued} onDone={() => { setIssued(null); refresh(); }} />
+        : <InviteForm people={people} onIssued={(next) => { setIssued(next); refresh(); }} />}
+
+      {invites.length > 0 && (
+        <div className="card">
+          <div className="card-head"><span className="card-name">Waiting to be redeemed</span></div>
+          <div className="card-body setlist">
+            {invites.map((invite) => (
+              <div className="setrow" key={invite.id}>
+                <span className="setname">{invite.email}</span>
+                <span className="card-meta">
+                  <span className="hint-xs">
+                    expires {String(invite.expires_at).slice(0, 10)}
+                  </span>
+                  <button className="btn-sm" onClick={() => revoke(invite.id)}>Revoke</button>
+                </span>
+              </div>
+            ))}
+          </div>
+          <div className="card-body">
+            <p className="hint-sm">
+              Codes cannot be shown again. Revoke and reissue if one was lost.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {members.map((member) => (
+        <MemberRow key={member.id} member={member} people={people}
+          currentUserId={currentUserId} onChanged={refresh}
+          onResetIssued={(next) => setIssued({ ...next, kind: "reset" })} />
+      ))}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════ APP ══
+   Auth gate first, then the dashboard. Permissions decide which tabs
+   render and whether they accept edits; the database decides what data
+   is actually returned and which writes are allowed.
+   ══════════════════════════════════════════════════════════════════ */
+
 export default function App() {
-  const [data, setData]     = useState<any>(null);
-  const [tab, setTab]       = useState("rev");
-  const [save, setSave]     = useState("saved");
-  const [type, setType]     = useState("week");
-  const [offset, setOffset] = useState(0);
+  const { session, profile, loading, signOut } = useAuth();
+
+  if (loading) {
+    return <div className="loading"><AppStyles /><div className="spinner" /><p>Loading…</p></div>;
+  }
+
+  if (!session) {
+    return <><AppStyles /><AuthScreen /></>;
+  }
+
+  if (!profile) {
+    return (
+      <div className="loading">
+        <AppStyles />
+        <p>This account has no profile yet. Ask an admin to check your access.</p>
+        <button className="auth-link" onClick={signOut}>Sign out</button>
+      </div>
+    );
+  }
+
+  /* A disabled account still holds valid credentials — the database
+     simply returns nothing to it. Say so plainly rather than showing an
+     empty dashboard. */
+  if (profile.status !== "active") {
+    return (
+      <div className="loading">
+        <AppStyles />
+        <p>Your access has been {profile.status === "disabled" ? "turned off" : "not activated yet"}.</p>
+        <p className="hint-sm">Ask an admin to re-enable your account.</p>
+        <button className="auth-link" onClick={signOut}>Sign out</button>
+      </div>
+    );
+  }
+
+  return <Dashboard profile={profile} session={session} signOut={signOut} />;
+}
+
+function Dashboard({ profile, session, signOut }) {
+  const [changingPassword, setChangingPassword] = useState(false);
+  const mayManageMembers = hasCapability(profile, "canManageMembers");
+  const tabs = [
+    ...visibleTabs(profile),
+    ...(mayManageMembers ? [{ id: "members", label: "Members" }] : []),
+  ];
+
+  const [data, setData]         = useState<any>(null);
+  const [tab, setTab]           = useState(tabs[0]?.id || "rev");
+  const [save, setSave]         = useState("saved");
+  const [loadError, setLoadError] = useState("");
+  const [type, setType]         = useState("week");
+  const [offset, setOffset]     = useState(0);
   const timer = useRef<any>(null);
   const ready = useRef(false);
   const today = new Date();
 
+  const canEditCurrentTab = tab === "members" ? true : canEditTab(profile, tab);
+  const mayCloseWeek      = hasCapability(profile, "canCloseWeek");
+  const mayResetData      = hasCapability(profile, "canResetData");
+
   useEffect(() => {
-    setData(migrate(loadSaved()));
-    setTimeout(() => { ready.current = true; }, 50);
+    loadDashboard()
+      .then((remote) => setData(migrate(remote)))
+      .catch((error) => setLoadError(error?.message || "Could not load the dashboard."))
+      .finally(() => setTimeout(() => { ready.current = true; }, 50));
   }, []);
 
   useEffect(() => {
     if (!data || !ready.current) return;
     setSave("saving");
     clearTimeout(timer.current);
-    timer.current = setTimeout(() => persist(data).then(() => setSave("saved")), 700);
+    timer.current = setTimeout(() => {
+      saveDashboard(data)
+        .then((rejected) => setSave(rejected.length ? "denied" : "saved"))
+        .catch(() => setSave("denied"));
+    }, 700);
   }, [data]);
 
   const closeWeek = () => {
@@ -4550,34 +4863,70 @@ export default function App() {
     setType("week"); setOffset(0);
   };
 
+  if (loadError) {
+    return (
+      <div className="loading">
+        <AppStyles />
+        <p className="auth-error">{loadError}</p>
+        <button className="auth-link" onClick={signOut}>Sign out</button>
+      </div>
+    );
+  }
+
   if (!data) {
     return <div className="loading"><AppStyles /><div className="spinner" /><p>Loading…</p></div>;
   }
 
+  if (!tabs.length) {
+    return (
+      <div className="loading">
+        <AppStyles />
+        <p>Your account has no sections enabled yet. Ask an admin for access.</p>
+        <button className="auth-link" onClick={signOut}>Sign out</button>
+      </div>
+    );
+  }
+
+  const saveLabel =
+    save === "saving" ? "Saving…" :
+    save === "denied" ? "Not saved — no permission" : "Saved ✓";
+
   return (
     <div className="root">
       <AppStyles />
+      {changingPassword && <ChangePassword onClose={() => setChangingPassword(false)} />}
       <header className="hdr">
         <div>
           <div className="eyebrow">Revenue Dashboard</div>
           <div className="hdr-name">{data.companyName || "Model Luxe Media"}</div>
         </div>
-        <div className={"save-dot " + save}>{save === "saving" ? "Saving…" : "Saved ✓"}</div>
+        <div style={{ textAlign: "right" }}>
+          <div className={"save-dot " + save}>{saveLabel}</div>
+          <div className="who">
+            {profile.role === "admin" && <span className="who-role">Admin</span>}
+            <span className="who-mail">{session.user.email}</span>
+            <button className="who-out" onClick={() => setChangingPassword(true)}>Password</button>
+            <button className="who-out" onClick={signOut}>Sign out</button>
+          </div>
+        </div>
       </header>
 
       <nav className="nav">
-        {[["rev","Revenue"],["team","Team"],["sales","Sales"],["org","Org"],["comm","Comp & Bonuses"],["charts","Charts"],["settings","Settings"]]
-          .map(([id, label]) => (
-            <button key={id} className={"nav-btn" + (tab === id ? " nav-active" : "")}
-              onClick={() => setTab(id)}>{label}</button>
-          ))}
+        {tabs.map((entry) => (
+          <button key={entry.id} className={"nav-btn" + (tab === entry.id ? " nav-active" : "")}
+            onClick={() => setTab(entry.id)}>{entry.label}</button>
+        ))}
       </nav>
 
-      <main className="main">
+      <main className={"main" + (canEditCurrentTab ? "" : " ro-body")}>
+        {!canEditCurrentTab && (
+          <div className="ro-banner">View only — you cannot change anything on this tab.</div>
+        )}
+
         {tab === "rev" && (
           <RevenueTab data={data} setData={setData} today={today}
             type={type} offset={offset} setType={setType} setOffset={setOffset}
-            onCloseWeek={closeWeek} />
+            onCloseWeek={mayCloseWeek ? closeWeek : null} />
         )}
         {tab === "team" && <TeamTab data={data} setData={setData} today={today} />}
         {tab === "sales" && <SalesTab data={data} setData={setData} today={today} />}
@@ -4590,12 +4939,15 @@ export default function App() {
           <ChartsTab data={data} today={today}
             type={type} offset={offset} setType={setType} setOffset={setOffset} />
         )}
+        {tab === "members" && (
+          <MembersTab data={data} currentUserId={session.user.id} />
+        )}
         {tab === "settings" && (
           <SettingsTab data={data} setData={setData} today={today}
-            onReset={() => {
+            onReset={mayResetData ? () => {
               if (window.confirm("Clear ALL data including saved week history and the sales ledger? This cannot be undone."))
                 setData(defaultData());
-            }} />
+            } : null} />
         )}
       </main>
     </div>
