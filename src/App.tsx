@@ -11,7 +11,7 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { APP_CSS } from "./styles";
 import { useAuth, AuthScreen, ChangePassword } from "./auth";
-import { loadDashboard, saveDashboard } from "./storage";
+import { loadDashboard, saveDashboard, markAsSaved } from "./storage";
 import { visibleTabs, canEditTab, hasCapability, TABS, CAPABILITIES,
          LEVEL_LABELS, PRESETS, defaultPermissions } from "./permissions";
 import { supabase } from "./supabase";
@@ -2050,8 +2050,12 @@ function RevenueTab({ data, setData, type, offset, setType, setOffset, today, on
         ))
       )}
 
-      <button className="btn-close-week" onClick={onCloseWeek}>Close week & save snapshot</button>
-      <p className="hint-xs center">Saves this week permanently, then starts a fresh week. History is never deleted.</p>
+      {onCloseWeek && (
+        <>
+          <button className="btn-close-week" onClick={onCloseWeek}>Close week & save snapshot</button>
+          <p className="hint-xs center">Saves this week permanently, then starts a fresh week. History is never deleted.</p>
+        </>
+      )}
 
       {showCat && (
         <CatalogModal existing={data.streams} onSelect={addStream} onClose={() => setShowCat(false)} />
@@ -4814,7 +4818,11 @@ function Dashboard({ profile, session, signOut }) {
 
   useEffect(() => {
     loadDashboard()
-      .then((remote) => setData(migrate(remote)))
+      .then((remote) => {
+        const migrated = migrate(remote);
+        markAsSaved(migrated);   // defaults filled on load are not edits
+        setData(migrated);
+      })
       .catch((error) => setLoadError(error?.message || "Could not load the dashboard."))
       .finally(() => setTimeout(() => { ready.current = true; }, 50));
   }, []);

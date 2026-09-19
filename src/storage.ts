@@ -161,13 +161,21 @@ export async function loadDashboard() {
   const assembled = assembleFromSections(
     sections, compRows.data || [], payoutRows.data || [], ownComp);
 
-  /* Remember what the server holds, so the first save only sends real edits. */
-  const split = splitIntoSections(assembled);
+  return pruneUndefined(assembled);
+}
+
+/* Records the current state as "already saved".
+
+   Call this once after migrate() has filled in defaults. Without it the
+   first comparison is against the raw server rows, so the defaults that
+   migrate() adds look like unsaved edits and provoke a write on load —
+   which a read-only member is then refused, showing a save error they
+   did nothing to cause. */
+export function markAsSaved(data) {
+  const split = splitIntoSections(data);
   readableSections.forEach((section) => {
     lastSaved[section] = JSON.stringify(split[section]);
   });
-
-  return pruneUndefined(assembled);
 }
 
 export async function saveDashboard(data) {

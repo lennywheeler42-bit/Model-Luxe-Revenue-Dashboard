@@ -50,6 +50,33 @@ export function useAuth() {
   return { session, profile, loading, signOut: () => supabase.auth.signOut() };
 }
 
+/* supabase-js reports a non-2xx edge function response as a bare
+   "Edge Function returned a non-2xx status code" and discards the body,
+   which hides the reason the request was refused. The body is still on
+   the attached Response, so read it back and use the real message. */
+async function callEdgeFunction(name: string, body: unknown) {
+  const { data, error } = await supabase.functions.invoke(name, { body });
+
+  if (!error) {
+    if (data?.error) return { ok: false, message: data.error };
+    return { ok: true, message: "" };
+  }
+
+  let message = error.message || "That request could not be completed.";
+  const response = (error as any)?.context;
+
+  if (response && typeof response.json === "function") {
+    try {
+      const parsed = await response.json();
+      if (parsed?.error) message = parsed.error;
+    } catch {
+      /* not JSON — keep the generic message */
+    }
+  }
+
+  return { ok: false, message };
+}
+
 /* ─────────────────────────── shared new-password controls ── */
 
 /* Used by every screen that sets a password, so the rules and the
@@ -170,15 +197,11 @@ function RedeemForm({ onBack }) {
     if (!code.trim()) { setError("Enter the invite code your admin sent you."); return; }
 
     setBusy(true);
-    const { data, error: redeemError } = await supabase.functions.invoke("redeem-invite", {
-      body: { email: email.trim(), code: code.trim(), password },
+    const redeemed = await callEdgeFunction("redeem-invite", {
+      email: email.trim(), code: code.trim(), password,
     });
 
-    if (redeemError || data?.error) {
-      setError(data?.error || redeemError?.message || "That code could not be redeemed.");
-      setBusy(false);
-      return;
-    }
+    if (!redeemed.ok) { setError(redeemed.message); setBusy(false); return; }
 
     /* Account exists now — sign straight in so they never see this screen twice. */
     const { error: signInError } = await supabase.auth.signInWithPassword({
@@ -238,15 +261,11 @@ function ResetForm({ onBack }) {
     if (!code.trim()) { setError("Enter the reset code your admin sent you."); return; }
 
     setBusy(true);
-    const { data, error: resetError } = await supabase.functions.invoke("reset-password", {
-      body: { email: email.trim(), code: code.trim(), password },
+    const reset = await callEdgeFunction("reset-password", {
+      email: email.trim(), code: code.trim(), password,
     });
 
-    if (resetError || data?.error) {
-      setError(data?.error || resetError?.message || "That code could not be used.");
-      setBusy(false);
-      return;
-    }
+    if (!reset.ok) { setError(reset.message); setBusy(false); return; }
 
     const { error: signInError } = await supabase.auth.signInWithPassword({
       email: email.trim(), password,
